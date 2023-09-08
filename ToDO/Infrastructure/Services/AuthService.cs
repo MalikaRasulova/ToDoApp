@@ -50,7 +50,7 @@ public class AuthService: IAuthService
 
     }
 
-    public async Task<Client?> Login(UserRegistrationDto entity)
+    public async Task<Client?> Login(UserLoginDto entity)
     {
         var userInfo = await _userRepository.GetAll()
             .FirstOrDefaultAsync(x =>

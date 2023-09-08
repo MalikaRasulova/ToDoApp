@@ -7,5 +7,8 @@ public interface IAuthService
 {
     Task RegisterUserAsync(UserRegistrationDto userDto);
 
-    Task<Client?> Login(UserRegistrationDto entity);
+    Task<Client?> Login(UserLoginDto userLoginDto);
+
+    public  Task Logout(Guid userId);
+
 }

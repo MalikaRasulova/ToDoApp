@@ -15,6 +15,11 @@ public class DataContext: DbContext
         AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
     }
 
+    public DataContext(DbContextOptions dbContextOptions): base(dbContextOptions)
+    {
+        
+    }
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         optionsBuilder.
