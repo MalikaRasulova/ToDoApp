@@ -5,7 +5,7 @@ namespace ToDO.Infrastructure.Repositories;
 
 public class UserRepository : BaseRepository<User>
 {
-    public UserRepository(DbContext context) : base(context)
+    public UserRepository(DataContext.DataContext context) : base(context)
     {
     }
 }

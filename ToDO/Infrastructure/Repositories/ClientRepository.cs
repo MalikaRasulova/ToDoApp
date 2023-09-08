@@ -5,7 +5,7 @@ namespace ToDO.Infrastructure.Repositories;
 
 public class ClientRepository: BaseRepository<Client>
 {
-    public ClientRepository(DbContext context) : base(context)
+    public ClientRepository(DataContext.DataContext context) : base(context)
     {
         
     }

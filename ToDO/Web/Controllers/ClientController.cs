@@ -13,6 +13,7 @@ public class ClientController : ControllerBase
         _clientService = clientService;
     }
 
+    [HttpPut]
     public async Task Update()
     {
         
