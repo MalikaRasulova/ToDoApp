@@ -1,5 +1,5 @@
 using Microsoft.EntityFrameworkCore;
-using ToDO.Configurations;
+
 using ToDO.Domain;
 
 namespace ToDO.Infrastructure.DataContext;
@@ -24,7 +24,7 @@ public class DataContext: DbContext
     {
         optionsBuilder.
             UseLazyLoadingProxies();
-        optionsBuilder.UseNpgsql(Settings.dbConnectionString);
+        optionsBuilder.UseNpgsql();
         base.OnConfiguring(optionsBuilder);
         
         //var connectionString = "connstr";
