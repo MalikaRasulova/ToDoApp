@@ -57,6 +57,23 @@ async function ensureSchema(client) {
       source_issue_id TEXT NOT NULL,
       target_issue_id TEXT NOT NULL
     );
+
+    -- Worklogs for issues
+    CREATE TABLE IF NOT EXISTS jira_worklogs (
+      worklog_id TEXT PRIMARY KEY,
+      issue_id TEXT NOT NULL,
+      author_account_id TEXT,
+      author_display_name TEXT,
+      time_spent_seconds INTEGER,
+      started_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ,
+      visibility_type TEXT,
+      visibility_value TEXT,
+      comment TEXT,
+      FOREIGN KEY (issue_id) REFERENCES jira_issues(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_jira_worklogs_issue_id ON jira_worklogs(issue_id);
   `);
 }
 
@@ -112,6 +129,31 @@ async function fetchAllIssues(fields = [
   }
 
   return results;
+}
+
+// Fetch only issue ids/keys to minimize payload
+async function fetchAllIssueIds() {
+  const results = [];
+  let startAt = 0;
+  const maxResults = 100; // Jira max is 100
+  const jql = '* order by id asc';
+
+  while (true) {
+    const res = await asApp().requestJira(
+      route`/rest/api/3/search?jql=${jql}&startAt=${startAt}&maxResults=${maxResults}&fields=*none`
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Jira issue id search failed ${res.status}: ${text}`);
+    }
+    const data = await res.json();
+    const issues = data.issues || [];
+    results.push(...issues);
+    if (issues.length < maxResults) break;
+    startAt += issues.length;
+  }
+
+  return results.map(i => ({ id: String(i.id), key: i.key }));
 }
 
 async function upsertProjects(client, projects) {
@@ -237,6 +279,116 @@ async function upsertIssueLinks(client, links) {
   return links.length;
 }
 
+// Helper to flatten ADF comment objects into plain text
+function extractTextFromAdf(adfNode) {
+  if (!adfNode) return null;
+  // If already a string, return as-is
+  if (typeof adfNode === 'string') return adfNode;
+  try {
+    const pieces = [];
+    (function walk(node) {
+      if (!node) return;
+      if (typeof node === 'string') {
+        pieces.push(node);
+        return;
+      }
+      if (Array.isArray(node)) {
+        for (const child of node) walk(child);
+        return;
+      }
+      if (node.text) pieces.push(node.text);
+      if (node.content) walk(node.content);
+      if (node.attrs && node.attrs.text) pieces.push(node.attrs.text);
+      if (node.marks) walk(node.marks);
+      if (node.children) walk(node.children);
+    })(adfNode);
+    const text = pieces.join(' ').replace(/\s+/g, ' ').trim();
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchIssueWorklogs(issueIdOrKey) {
+  const all = [];
+  let startAt = 0;
+  const maxResults = 100; // practical page size
+  while (true) {
+    const res = await asApp().requestJira(
+      route`/rest/api/3/issue/${issueIdOrKey}/worklog?startAt=${startAt}&maxResults=${maxResults}`
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Jira worklog fetch failed for ${issueIdOrKey} -> ${res.status}: ${text}`);
+    }
+    const data = await res.json();
+    const values = data.worklogs || data.values || [];
+    all.push(...values);
+    const fetched = values.length;
+    const total = typeof data.total === 'number' ? data.total : null;
+    if (fetched < maxResults || (total !== null && all.length >= total)) break;
+    startAt += fetched;
+  }
+  return all;
+}
+
+function mapWorklog(issueId, wl) {
+  const visibility = wl.visibility || {};
+  const commentText = wl.comment && typeof wl.comment === 'object' ? extractTextFromAdf(wl.comment) : (wl.comment || null);
+  return {
+    worklogId: String(wl.id),
+    issueId: String(issueId),
+    authorAccountId: wl.author?.accountId || null,
+    authorDisplayName: wl.author?.displayName || null,
+    timeSpentSeconds: typeof wl.timeSpentSeconds === 'number' ? wl.timeSpentSeconds : null,
+    startedAt: wl.started ? new Date(wl.started) : null,
+    updatedAt: wl.updated ? new Date(wl.updated) : null,
+    visibilityType: visibility.type || null,
+    visibilityValue: visibility.value || null,
+    comment: commentText
+  };
+}
+
+async function upsertWorklogs(client, worklogs) {
+  if (worklogs.length === 0) return 0;
+  await client.query('BEGIN');
+  try {
+    for (const w of worklogs) {
+      await client.query(
+        `INSERT INTO jira_worklogs (worklog_id, issue_id, author_account_id, author_display_name, time_spent_seconds, started_at, updated_at, visibility_type, visibility_value, comment)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT (worklog_id) DO UPDATE SET
+           issue_id = EXCLUDED.issue_id,
+           author_account_id = EXCLUDED.author_account_id,
+           author_display_name = EXCLUDED.author_display_name,
+           time_spent_seconds = EXCLUDED.time_spent_seconds,
+           started_at = EXCLUDED.started_at,
+           updated_at = EXCLUDED.updated_at,
+           visibility_type = EXCLUDED.visibility_type,
+           visibility_value = EXCLUDED.visibility_value,
+           comment = EXCLUDED.comment`,
+        [
+          w.worklogId,
+          w.issueId,
+          w.authorAccountId,
+          w.authorDisplayName,
+          w.timeSpentSeconds,
+          w.startedAt,
+          w.updatedAt,
+          w.visibilityType,
+          w.visibilityValue,
+          w.comment
+        ]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  }
+  return worklogs.length;
+}
+
 const resolver = new Resolver();
 
 resolver.define('sync.projects', async () => {
@@ -285,6 +437,65 @@ resolver.define('sync.relations', async () => {
   }
 });
 
+resolver.define('sync.worklogs', async () => {
+  if (!DATABASE_URL) throw new Error('DATABASE_URL / POSTGRES_URL / PG_CONNECTION_STRING is not configured');
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+    const issues = await fetchAllIssueIds();
+    let total = 0;
+    for (const issue of issues) {
+      const wls = await fetchIssueWorklogs(issue.id);
+      const mapped = wls.map(wl => mapWorklog(issue.id, wl));
+      total += await upsertWorklogs(client, mapped);
+    }
+    return { worklogs: total };
+  } finally {
+    client.release();
+  }
+});
+
+resolver.define('get.worklogs', async (req) => {
+  if (!DATABASE_URL) throw new Error('DATABASE_URL / POSTGRES_URL / PG_CONNECTION_STRING is not configured');
+  const payload = req && req.payload ? req.payload : {};
+  const issueId = payload.issueId || null;
+  const issueKey = payload.issueKey || null;
+  const limit = Math.min(Math.max(Number(payload.limit || 50), 1), 500);
+
+  if (!issueId && !issueKey) {
+    throw new Error('Provide issueId or issueKey');
+  }
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+    if (issueKey) {
+      const { rows } = await client.query(
+        `SELECT w.* FROM jira_worklogs w
+         JOIN jira_issues i ON i.id = w.issue_id
+         WHERE i.key = $1
+         ORDER BY COALESCE(w.started_at, w.updated_at) DESC
+         LIMIT ${limit}`,
+        [issueKey]
+      );
+      return { worklogs: rows };
+    } else {
+      const { rows } = await client.query(
+        `SELECT * FROM jira_worklogs
+         WHERE issue_id = $1
+         ORDER BY COALESCE(started_at, updated_at) DESC
+         LIMIT ${limit}`,
+        [issueId]
+      );
+      return { worklogs: rows };
+    }
+  } finally {
+    client.release();
+  }
+});
+
 resolver.define('sync.all', async () => {
   // Convenience endpoint to run full sync in order
   if (!DATABASE_URL) throw new Error('DATABASE_URL / POSTGRES_URL / PG_CONNECTION_STRING is not configured');
@@ -299,7 +510,14 @@ resolver.define('sync.all', async () => {
     const issuesCount = await upsertIssues(client, mapped);
     const links = extractIssueLinks(mapped);
     const linksCount = await upsertIssueLinks(client, links);
-    return { projects: projectsCount, issues: issuesCount, links: linksCount };
+    // Fetch and upsert worklogs for all issues
+    let worklogsCount = 0;
+    for (const m of mapped) {
+      const wls = await fetchIssueWorklogs(m.id);
+      const wMapped = wls.map(wl => mapWorklog(m.id, wl));
+      worklogsCount += await upsertWorklogs(client, wMapped);
+    }
+    return { projects: projectsCount, issues: issuesCount, links: linksCount, worklogs: worklogsCount };
   } finally {
     client.release();
   }

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Worklog Visibility</title>
+    <style>
+      body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 0; }
+      header { padding: 12px 16px; border-bottom: 1px solid #E5E7EB; background: #fff; position: sticky; top: 0; z-index: 10; }
+      h1 { font-size: 16px; margin: 0; font-weight: 600; }
+      #content { padding: 12px 16px; }
+      .row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; padding: 10px 0; border-bottom: 1px solid #F3F4F6; }
+      .muted { color: #6B7280; font-size: 12px; }
+      .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid #E5E7EB; background: #F9FAFB; }
+      .author { font-weight: 600; }
+      .comment { white-space: pre-wrap; }
+      .loading, .error { padding: 8px 12px; border-radius: 8px; }
+      .loading { background: #EFF6FF; color: #1D4ED8; border: 1px solid #BFDBFE; }
+      .error { background: #FEF2F2; color: #B91C1C; border: 1px solid #FECACA; }
+      .toolbar { display: flex; gap: 8px; align-items: center; }
+      select, input[type="number"] { padding: 6px 8px; border: 1px solid #E5E7EB; border-radius: 6px; }
+    </style>
+    <script src="https://connect-cdn.atl-paas.net/all.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Worklogs</h1>
+    </header>
+    <div id="content">
+      <div class="toolbar">
+        <label class="muted">Order:</label>
+        <select id="order">
+          <option value="desc" selected>Newest</option>
+          <option value="asc">Oldest</option>
+        </select>
+        <label class="muted">Limit:</label>
+        <input id="limit" type="number" min="1" max="500" value="50" />
+        <button id="refresh">Refresh</button>
+      </div>
+      <div id="status" class="loading">Loading…</div>
+      <div id="list"></div>
+    </div>
+    <script>
+      (function () {
+        var AP = window.AP;
+        var listEl = document.getElementById('list');
+        var statusEl = document.getElementById('status');
+        var orderEl = document.getElementById('order');
+        var limitEl = document.getElementById('limit');
+        var refreshEl = document.getElementById('refresh');
+
+        function fmtDate(iso) {
+          if (!iso) return '';
+          try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
+        }
+
+        function fmtDuration(seconds) {
+          if (typeof seconds !== 'number' || !isFinite(seconds)) return '';
+          var mins = Math.round(seconds / 60);
+          var h = Math.floor(mins / 60);
+          var m = mins % 60;
+          return h + 'h ' + m + 'm';
+        }
+
+        function render(worklogs) {
+          listEl.innerHTML = '';
+          if (!Array.isArray(worklogs) || worklogs.length === 0) {
+            listEl.innerHTML = '<div class="muted">No worklogs.</div>';
+            return;
+          }
+          var ordered = worklogs.slice().sort(function(a,b){
+            var at = a.started_at || a.updated_at; var bt = b.started_at || b.updated_at;
+            var av = at ? new Date(at).getTime() : 0; var bv = bt ? new Date(bt).getTime() : 0;
+            return orderEl.value === 'asc' ? av - bv : bv - av;
+          });
+          for (var i = 0; i < ordered.length; i++) {
+            var w = ordered[i];
+            var row = document.createElement('div');
+            row.className = 'row';
+            var left = document.createElement('div');
+            left.innerHTML = '<div class="author">' + (w.author_display_name || w.author_account_id || 'Unknown') + '</div>' +
+              '<div class="muted">' + (w.comment || '') + '</div>';
+            var middle = document.createElement('div');
+            middle.innerHTML = '<span class="muted">' + fmtDate(w.started_at || w.updated_at) + '</span>';
+            var right = document.createElement('div');
+            var pill = document.createElement('span');
+            pill.className = 'pill';
+            pill.textContent = (w.visibility_type ? (w.visibility_type + ':' + (w.visibility_value || '')) : 'public') + ' · ' + fmtDuration(w.time_spent_seconds);
+            right.appendChild(pill);
+            row.appendChild(left); row.appendChild(middle); row.appendChild(right);
+            listEl.appendChild(row);
+          }
+        }
+
+        function setStatus(msg, isError) {
+          statusEl.className = isError ? 'error' : 'loading';
+          statusEl.textContent = msg;
+        }
+
+        function load() {
+          setStatus('Loading…');
+          AP.context.getContext(function (ctx) {
+            var issueKey = ctx && ctx.jira && ctx.jira.issue && ctx.jira.issue.key;
+            if (!issueKey) {
+              setStatus('Cannot resolve issue context', true);
+              return;
+            }
+            var payload = { issueKey: issueKey, limit: Number(limitEl.value || 50) };
+            AP.request({
+              url: '/resolver/get.worklogs',
+              type: 'POST',
+              contentType: 'application/json',
+              data: JSON.stringify({ payload: payload })
+            }).then(function (resp) {
+              try {
+                var data = JSON.parse(resp.body || '{}');
+                render(data.worklogs || []);
+                setStatus('');
+              } catch (e) {
+                setStatus('Failed to parse response', true);
+              }
+            }).catch(function (err) {
+              setStatus('Failed to fetch worklogs', true);
+            });
+          });
+        }
+
+        orderEl.addEventListener('change', load);
+        limitEl.addEventListener('change', load);
+        refreshEl.addEventListener('click', load);
+
+        // Initial load
+        load();
+      })();
+    </script>
+  </body>
+</html>

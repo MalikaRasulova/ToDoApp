@@ -5,6 +5,15 @@ modules:
   function:
     - key: resolver
       handler: src/index.handler
+  jira:issuePanel:
+    - key: worklog-visibility-panel
+      title: Worklogs
+      resource: worklog-ui
+      resolver:
+        function: resolver
+resources:
+  - key: worklog-ui
+    path: src/frontend
 permissions:
   scopes:
     - read:jira-work
