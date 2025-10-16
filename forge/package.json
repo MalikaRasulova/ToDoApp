@@ -1,0 +1,11 @@
+{
+  "name": "jira-postgres-sync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@forge/api": "^3.4.0",
+    "@forge/resolver": "^2.5.0",
+    "pg": "^8.12.0"
+  }
+}
