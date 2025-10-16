@@ -1,0 +1,14 @@
+app:
+  id: your-app-id
+  name: jira-postgres-sync
+modules:
+  function:
+    - key: resolver
+      handler: src/index.handler
+permissions:
+  scopes:
+    - read:jira-work
+    - read:jira-project
+# NOTE: Set your DATABASE_URL (or POSTGRES_URL / PG_CONNECTION_STRING) via Forge variables
+#   forge variables set DATABASE_URL "postgres://user:pass@host:5432/db?sslmode=require"
+# This app uses @forge/resolver functions only; add UI modules if needed.
